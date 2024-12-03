@@ -8,6 +8,27 @@
 import SwiftUI
 import Foundation
 
+struct ProjectSelector: View {
+    @Binding var project: URL?
+    @State private var showProjectPicker = false
+    
+    var body: some View {
+        Button {
+            showProjectPicker = true
+        } label: {
+            Text("Select a project")
+        }
+        .fileImporter(isPresented: $showProjectPicker, allowedContentTypes: [.pdf, .directory], onCompletion: { result in
+            switch result {
+            case .success(let count):
+                project = count
+            case .failure(let error):
+                print(error.localizedDescription)
+            }
+        })
+    }
+}
+
 struct Commit: Identifiable, Hashable {
     let id: String  // commit hash
     let message: String
@@ -16,6 +37,8 @@ struct Commit: Identifiable, Hashable {
 }
 
 struct ContentView: View {
+    @State var project: URL?
+    
     @State private var commits: [Commit] = []
     @State private var selectedCommit: Commit?
     @State private var errorMessage: String = ""
@@ -24,95 +47,102 @@ struct ContentView: View {
     @State private var isDragging = false // Track slider interaction
 
     var body: some View {
-        NavigationSplitView {
-            ScrollViewReader { proxy in
-                List(commits, id: \.id, selection: $selectedCommit) { commit in
-                    VStack(alignment: .leading) {
-                        Text(commit.message)
-                            .font(.headline)
-                        Text(commit.id)
-                            .lineLimit(1)
-                        HStack {
-                            Text(commit.author)
-                                .font(.subheadline)
-                            Spacer()
-                            Text("\(commit.date, style: .relative) ago")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }.tag(commit)
-                }
-                .onChange(of: selectedCommit) { oldValue, newValue in
-                    if let newValue, let index = commits.firstIndex(of: newValue) {
-                        // Check out
-                        checkoutCommit(commit: newValue, head: index == 0)
-                        
-                        withAnimation {
-                            proxy.scrollTo(newValue.id)
-                        }
-                        if !isDragging, newValue != oldValue  {
-                            sliderValue = Double(index)
-                        }
+        if project == nil {
+            ProjectSelector(project: $project)
+        } else {
+            NavigationSplitView {
+                ScrollViewReader { proxy in
+                    List(commits, id: \.id, selection: $selectedCommit) { commit in
+                        VStack(alignment: .leading) {
+                            Text(commit.message)
+                                .font(.headline)
+                            Text(commit.id)
+                                .lineLimit(1)
+                            HStack {
+                                Text(commit.author)
+                                    .font(.subheadline)
+                                Spacer()
+                                Text("\(commit.date, style: .relative) ago")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }.tag(commit)
                     }
-                }
-                .onAppear {
-                    print("FETCHING")
-                    fetchRecentCommits()
-                }
-                
-                if !errorMessage.isEmpty {
-                    Text("Error: \(errorMessage)")
-                        .foregroundColor(.red)
-                }
-            }
-        } detail: {
-            VStack {
-                Slider(
-                    value: Binding(
-                        get: {
-                            sliderValue
-                        },
-                        set: { newValue in
-                            // Mark as dragging
-                            isDragging = true
-                            sliderValue = max(0, min(newValue, Double(commits.count - 1)))
+                    .onChange(of: selectedCommit) { oldValue, newValue in
+                        if let newValue, let index = commits.firstIndex(of: newValue) {
+                            // Check out
+                            checkoutCommit(path: project!.path, commit: newValue, head: index == 0)
                             
-                            // Update `selectedCommit` only if it's different
-                            let index = Int(sliderValue)
-                            if index < commits.count {
-                                let newCommit = commits[index]
-                                if selectedCommit != newCommit {
-                                    selectedCommit = newCommit
-                                }
+                            withAnimation {
+                                proxy.scrollTo(newValue.id)
+                            }
+                            if !isDragging, newValue != oldValue  {
+                                sliderValue = Double(index)
                             }
                         }
-                    ),
-                    in: 0...Double(max(0, commits.count - 1))
-//                    step: 1
-                )
-                .gesture(DragGesture().onEnded { _ in
-                    isDragging = false // Reset dragging flag when interaction ends
-                })
-                
-                Spacer()
-                
-                Text("Total Commits: \(commits.count)")
-                Text("Slider Value: \(sliderValue)")
-                Text("Selected Commit: \(selectedCommit?.id ?? "none")")
+                    }
+                    .onAppear {
+                        print("FETCHING")
+                        fetchRecentCommits(path: project!.path)
+                    }
+                    
+                    if !errorMessage.isEmpty {
+                        Text("Error: \(errorMessage)")
+                            .foregroundColor(.red)
+                    }
+                }
+            } detail: {
+                VStack {
+                    Text(project!.lastPathComponent)
+                    
+                    Slider(
+                        value: Binding(
+                            get: {
+                                sliderValue
+                            },
+                            set: { newValue in
+                                // Mark as dragging
+                                isDragging = true
+                                sliderValue = max(0, min(newValue, Double(commits.count - 1)))
+                                
+                                // Update `selectedCommit` only if it's different
+                                let index = Int(sliderValue)
+                                if index < commits.count {
+                                    let newCommit = commits[index]
+                                    if selectedCommit != newCommit {
+                                        selectedCommit = newCommit
+                                    }
+                                }
+                            }
+                        ),
+                        in: 0...Double(max(0, commits.count - 1))
+                    )
+                    .gesture(DragGesture().onEnded { _ in
+                        isDragging = false // Reset dragging flag when interaction ends
+                    })
+                    
+                    Spacer()
+                    
+                    Text("Total Commits: \(commits.count)")
+                    Text("Slider Value: \(sliderValue)")
+                    Text("Selected Commit: \(selectedCommit?.id ?? "none")")
+                }
+                .padding()
             }
-            .padding()
+            .navigationTitle(selectedCommit != nil ? "Commit: \(selectedCommit!.message)" : "Commits")
+            .toolbar {
+                ProjectSelector(project: $project)
+            }
         }
-        .navigationTitle(selectedCommit != nil ? "Commit: \(selectedCommit!.message)" : "Commits")
     }
     
-    func fetchRecentCommits() {
+    func fetchRecentCommits(path: String) {
         let task = Process()
         task.launchPath = "/usr/bin/git"
         task.arguments = [
             "--no-pager",
-            "-C", "/Users/malted/HC/high-seas",
+            "-C", path,
             "log",
-//            "-n", "10",
             "--pretty=format:%H%n%an%n%ad%n%s"
         ]
         
@@ -162,12 +192,12 @@ struct ContentView: View {
         commits = parsedCommits
     }
     
-    func checkoutCommit(commit: Commit, head: Bool) {
+    func checkoutCommit(path: String, commit: Commit, head: Bool) {
         let task = Process()
         task.launchPath = "/usr/bin/git"
         task.arguments = [
             "--no-pager",
-            "-C", "/Users/malted/HC/high-seas",
+            "-C", path,
             "checkout",
             head ? "main" : commit.id
         ]
